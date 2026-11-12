@@ -37,7 +37,7 @@ button{font-family:inherit;font-weight:700;border:none;cursor:pointer;color:inhe
 #fx{position:fixed;inset:0;pointer-events:none;z-index:60;width:100%;height:100%}
 
 /* header */
-header{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;padding:10px 12px;
+header{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;padding:calc(10px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 10px calc(12px + env(safe-area-inset-left));
   background:rgba(255,255,255,.4);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:3px solid rgba(255,255,255,.7)}
 .chip{background:#fff;border-radius:18px;padding:5px 12px;font-size:19px;font-weight:700;display:flex;gap:6px;align-items:center;box-shadow:0 4px 0 rgba(43,33,64,.12)}
 .chip.av{padding:2px 10px 2px 2px}
@@ -48,7 +48,7 @@ header{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;
 .iconbtn{width:46px;height:46px;border-radius:15px;background:#fff;font-size:21px;box-shadow:0 4px 0 rgba(43,33,64,.12);display:flex;align-items:center;justify-content:center}
 .iconbtn:active{transform:translateY(3px);box-shadow:0 1px 0 rgba(43,33,64,.12)}
 
-.app{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:8px 14px 34px}
+.app{position:relative;z-index:1;max-width:760px;margin:0 auto;padding:8px 14px calc(34px + env(safe-area-inset-bottom))}
 .screen{display:none}
 .screen.on{display:block;animation:screenIn .35s ease both}
 @keyframes screenIn{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
@@ -332,7 +332,7 @@ header{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;
 #toast.on{opacity:1;transform:translate(-50%,0)}
 
 @media (max-width:440px){
-  header{gap:6px;padding:8px}
+  header{gap:6px;padding:calc(8px + env(safe-area-inset-top)) 8px 8px}
   #hName{display:none}
   .chip{font-size:17px;padding:5px 9px}
   .chip.av{padding:2px}
@@ -345,6 +345,10 @@ header{position:sticky;top:0;z-index:20;display:flex;gap:8px;align-items:center;
   .tf b{width:24px;height:24px}
   .nlab{width:118px;font-size:14px}
   .tile b{font-size:20px}
+}
+@media (min-width:700px) and (min-height:700px){
+  header,.app,#modal .mbox,#toast{zoom:1.22}
+  .popArea{height:max(380px,calc((100dvh - 330px) / 1.22))}
 }
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important}#bgfx{display:none}}
 </style>
@@ -500,7 +504,36 @@ try {
   if (raw) { const o = JSON.parse(raw); const d = DEF(); S = Object.assign(d, o); S.owned = Object.assign(d.owned, o.owned || {}); S.look = Object.assign(DEF().look, o.look || {}); }
   else { const old = localStorage.getItem('mathcats.v1'); if (old) { const o = JSON.parse(old); S.fish = o.stars || 0; S.total = o.total || 0; S.right = o.right || 0; S.sound = o.sound !== false; } }
 } catch (e) {}
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+/* cloud sync (when hosted as a Claude artifact): progress follows the signed-in account */
+let cloudRef = null, cloudBusy = false, cloudDirty = false, cloudT;
+async function cloudSave() {
+  if (!cloudRef) return;
+  if (cloudBusy) { cloudDirty = true; return; }
+  cloudBusy = true;
+  try { await cloudRef.set(JSON.parse(JSON.stringify(S))); }
+  catch (e) { const c = e && e.code; if (c === 'unavailable') { cloudDirty = true; } else if (c !== 'resource_exhausted') cloudRef = null; }
+  cloudBusy = false;
+  if (cloudDirty) { cloudDirty = false; clearTimeout(cloudT); cloudT = setTimeout(cloudSave, 2500); }
+}
+const save = () => { S.updated = Date.now(); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} clearTimeout(cloudT); cloudT = setTimeout(cloudSave, 1500); };
+async function cloudInit() {
+  try {
+    if (!window.claude || typeof window.claude.use !== 'function') return;
+    const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+    if (!db || !user) return;
+    const id = await user.id(); if (!id) return;
+    const ref = db.doc('data/users/' + id + '/mathcats');
+    const snap = await ref.get(); cloudRef = ref;
+    if (snap.exists) {
+      const o = JSON.parse(JSON.stringify(snap.data() || {}));
+      if ((o.updated || 0) > (S.updated || 0)) {
+        const d = DEF(); S = Object.assign(d, o); S.owned = Object.assign(d.owned, o.owned || {}); S.look = Object.assign(DEF().look, o.look || {});
+        try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {}
+        hdr(); refreshKitties(); if (curScreen === 'sHome') renderHome(); else if (curScreen === 'sMap') renderMap();
+      } else if ((o.updated || 0) < (S.updated || 0)) cloudSave();
+    } else cloudSave();
+  } catch (e) {}
+}
 const KN = () => (S.kittyName || 'Mochi').trim() || 'Mochi';
 
 /* ---------- kitty art ---------- */
@@ -1114,9 +1147,11 @@ function finish() {
   $('#rTitle').textContent = stars === 3 ? 'Purrfect!' : stars === 2 ? 'Great job!' : stars === 1 ? 'Nice try!' : 'Keep practicing!';
   $('#rStars').innerHTML = [0, 1, 2].map(k => `<span class="${stars > k ? 'on' : ''}" style="animation-delay:${300 + k * 280}ms">★</span>`).join('');
   $('#rSub').textContent = `${run.firstRight} of ${run.qs.length} right on the first try`;
-  const fe = $('#rFish'); let c = 0; fe.textContent = '+0 🐟';
-  const tick = setInterval(() => { c++; fe.textContent = `+${c} 🐟`; if (c % 2) tone(900 + c * 20, .05, 'square', .02); if (c >= run.fish) clearInterval(tick); }, 60);
-  if (run.fish === 0) clearInterval(tick);
+  const fe = $('#rFish'); const earned = run.fish; let c = 0; fe.textContent = '+0 🐟';
+  clearInterval(window._rt);
+  const tick = setInterval(() => { c++; fe.textContent = `+${c} 🐟`; if (c % 2) tone(900 + c * 20, .05, 'square', .02); if (c >= earned) clearInterval(tick); }, 60);
+  window._rt = tick;
+  if (earned === 0) clearInterval(tick);
   const next = WORLDS[run.wi + 1], unlockedNow = prev < 1 && stars >= 1 && next;
   $('#rUnlock').textContent = unlockedNow ? `🔓 New world unlocked: ${next.em} ${next.name}!` : stars === 0 ? `Get 4 right to earn a ⭐ and open the next world!` : '';
   const nb = $('#rNext'); nb.style.display = next && isUnlocked(run.wi + 1) ? '' : 'none';
@@ -1365,7 +1400,7 @@ document.addEventListener('keydown', e => {
   bg.innerHTML = h;
 })();
 
-hdr(); renderHome();
+hdr(); renderHome(); cloudInit();
 </script>
 </body>
 </html>
